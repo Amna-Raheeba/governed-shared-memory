@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "governed-shared-memory"
+version = "0.1.0"
+description = "Governed shared memory for multi-agent LLM systems — access control, contradiction detection on write, provenance, explicit supersession"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Amna Raheeba" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+dashboard = ["streamlit>=1.30"]
+
+[project.scripts]
+governed-memory = "governed_shared_memory.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["governed_shared_memory*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# CI invokes the plain `pytest` binary, which (unlike `python -m pytest`)
+# does not put the cwd on sys.path — declare it so
+# `import governed_shared_memory` works the same locally and in Actions.
+pythonpath = ["."]
