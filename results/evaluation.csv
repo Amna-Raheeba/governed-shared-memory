@@ -1,0 +1,19 @@
+task_id,question,expected,hit,stale_hit,retrieved_top1
+deadline-update,project deadline,project deadline is 20 January,True,False,project deadline is 20 January
+cross-writer-conflict,project deadline,project deadline is 20 January,True,False,project deadline is 20 January
+private-leak,team meeting,team meeting is every Monday,True,False,team meeting is every Monday
+multi-fact-recall,conference budget,conference budget is $800,True,False,conference budget is $800
+multi-fact-recall,workshop venue,workshop venue is Karachi,True,False,workshop venue is Karachi
+multi-fact-recall,keynote speaker,keynote speaker is Sara Ahmed,True,False,keynote speaker is Sara Ahmed
+polarity-conflict,saliency maps clinician trust,saliency maps did not improve clinician trust,True,False,saliency maps did not improve clinician trust
+supersede-chain,project budget,project budget is $1200,True,False,project budget is $1200
+
+questions,8
+recall_at_k,1.0
+planted_conflicts,2
+conflicts_flagged,2
+contradiction_recall,1.0
+leak_attempts,1
+leaks_blocked,1
+leak_blocked_rate,1.0
+stale_leak_rate,0.0
