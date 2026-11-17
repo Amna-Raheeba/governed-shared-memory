@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS memories (
     status TEXT NOT NULL,
     superseded_by TEXT,
     supersedes TEXT,
+    superseded_at TEXT,
+    supersession_reason TEXT,
     tags TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS audit (
@@ -57,28 +59,71 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns a pre-0.2.0 database does not have yet.
+
+        ``CREATE TABLE IF NOT EXISTS`` never alters an existing table,
+        so a database file written by v0.1.0 keeps its old shape until
+        this runs. Rows that predate the columns get NULL for
+        ``superseded_at`` / ``supersession_reason`` — tombstones built
+        from them report "age unknown" instead of a guessed date.
+        """
+        columns = {row[1] for row in
+                   self.conn.execute("PRAGMA table_info(memories)")}
+        for column, ddl in (("superseded_at", "TEXT"),
+                            ("supersession_reason", "TEXT")):
+            if column not in columns:
+                self.conn.execute(
+                    f"ALTER TABLE memories ADD COLUMN {column} {ddl}")
 
     def close(self) -> None:
         self.conn.close()
 
     # -- records ------------------------------------------------------
     def insert(self, record: MemoryRecord) -> MemoryRecord:
+        # Named columns, not positional VALUES: after a migration the
+        # physical column order of an old database differs from a
+        # fresh one (ALTER TABLE appends at the end), and a positional
+        # insert would silently write values into the wrong columns.
         self.conn.execute(
-            "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO memories (record_id, text, writer, namespace,"
+            " source, confidence, created_at, status, superseded_by,"
+            " supersedes, superseded_at, supersession_reason, tags)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (record.record_id, record.text, record.writer, record.namespace,
              record.source, record.confidence, record.created_at,
              record.status, record.superseded_by, record.supersedes,
+             record.superseded_at, record.supersession_reason,
              json.dumps(record.tags)),
         )
         self.conn.commit()
         return record
 
     def update_status(self, record_id: str, status: str,
-                      superseded_by: str | None) -> None:
+                      superseded_by: str | None,
+                      superseded_at: str | None = None,
+                      supersession_reason: str | None = None) -> None:
+        """Mark a record superseded — and record when and why.
+
+        ``superseded_at`` / ``supersession_reason`` are written only
+        when given, so a plain status change never overwrites them
+        with NULLs.
+        """
+        fields = ["status=?", "superseded_by=?"]
+        params: list = [status, superseded_by]
+        if superseded_at is not None:
+            fields.append("superseded_at=?")
+            params.append(superseded_at)
+        if supersession_reason is not None:
+            fields.append("supersession_reason=?")
+            params.append(supersession_reason)
+        params.append(record_id)
         self.conn.execute(
-            "UPDATE memories SET status=?, superseded_by=? WHERE record_id=?",
-            (status, superseded_by, record_id),
+            f"UPDATE memories SET {', '.join(fields)} WHERE record_id=?",
+            params,
         )
         self.conn.commit()
 
@@ -162,10 +207,15 @@ class Store:
 
 
 def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
+    keys = row.keys()
     return MemoryRecord(
         text=row["text"], writer=row["writer"], namespace=row["namespace"],
         source=row["source"], confidence=row["confidence"],
         created_at=row["created_at"], record_id=row["record_id"],
         status=row["status"], superseded_by=row["superseded_by"],
-        supersedes=row["supersedes"], tags=json.loads(row["tags"]),
+        supersedes=row["supersedes"],
+        superseded_at=row["superseded_at"] if "superseded_at" in keys else None,
+        supersession_reason=(row["supersession_reason"]
+                             if "supersession_reason" in keys else None),
+        tags=json.loads(row["tags"]),
     )

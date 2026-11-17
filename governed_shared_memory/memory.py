@@ -17,6 +17,12 @@ The four failure modes, and where each is stopped
 4. **Provenance collapse** — every record carries writer, timestamp,
    source and confidence from construction; JSON export round-trips
    them; the audit log records every action.
+
+Superseded records become *tombstones* (see ``tombstones.py``): they
+stay queryable as history with the superseding record's id, the
+reason, and the time — and a confidence that decays deterministically
+with age — so an agent can ask what the team used to believe, when
+it changed, and why.
 """
 from __future__ import annotations
 
@@ -27,6 +33,7 @@ from .bm25 import BM25
 from .contradictions import Conflict, detect_all, detect_for_new
 from .records import AuditEntry, MemoryRecord
 from .store import Store
+from .tombstones import Tombstone, from_record, now_iso
 
 
 class GovernedMemory:
@@ -153,10 +160,18 @@ class GovernedMemory:
 
     # -- supersession -------------------------------------------------
     def supersede(self, agent_id: str, old_record_id: str, text: str,
-                  source: str, confidence: float = 1.0) -> MemoryRecord:
+                  source: str, confidence: float = 1.0,
+                  reason: str | None = None,
+                  superseded_at: str | None = None) -> MemoryRecord:
         """Replace a record explicitly: old one is marked superseded,
         the new one links back to it. The old text stays readable in
-        history; nothing is ever silently overwritten."""
+        history; nothing is ever silently overwritten.
+
+        ``reason`` is recorded on the old record — it becomes the
+        tombstone's answer to "why did this change?" — and
+        ``superseded_at`` defaults to now (an explicit value exists
+        for deterministic replays and tests).
+        """
         old = self.store.get(old_record_id)
         if old is None:
             raise KeyError(f"no such record: {old_record_id}")
@@ -168,18 +183,62 @@ class GovernedMemory:
                 namespace=old.namespace, detail=str(exc),
             ))
             raise
+        stamp = superseded_at or now_iso()
         new = MemoryRecord(
             text=text, writer=agent_id, namespace=old.namespace,
             source=source, confidence=confidence, supersedes=old.record_id,
         )
         self.store.insert(new)
-        self.store.update_status(old.record_id, "superseded", new.record_id)
+        self.store.update_status(old.record_id, "superseded", new.record_id,
+                                 superseded_at=stamp,
+                                 supersession_reason=reason)
+        detail = f"supersedes {old.record_id}"
+        if reason:
+            detail += f" — {reason}"
         self.store.log(AuditEntry(
             action="supersede", actor=agent_id, record_id=new.record_id,
-            namespace=old.namespace,
-            detail=f"supersedes {old.record_id}",
+            namespace=old.namespace, detail=detail,
         ))
         return new
+
+    # -- tombstones ---------------------------------------------------
+    def tombstones(self, agent_id: str, namespace: str) -> list[Tombstone]:
+        """Every superseded record in a namespace, as tombstones.
+
+        Access-checked like any read: a private namespace's tombstones
+        are visible only to its owner and admins. Newest-superseded
+        first. Each tombstone computes its decayed confidence on
+        demand — ``t.decayed_confidence(at=..., half_life_seconds=...)``
+        — so the reference time is the caller's choice, not the query's.
+        """
+        try:
+            self.policy.check_read(agent_id, namespace)
+        except AccessDenied as exc:
+            self.store.log(AuditEntry(
+                action="deny", actor=agent_id, namespace=namespace,
+                detail=str(exc),
+            ))
+            raise
+        records = self.store.list(namespace=namespace, status="superseded")
+        stones = [from_record(r) for r in records]
+        stones.sort(key=lambda t: (t.superseded_at or t.created_at,
+                                   t.record_id), reverse=True)
+        return stones
+
+    def tombstone_history(self, agent_id: str, record_id: str,
+                          ) -> list[Tombstone]:
+        """The full supersession chain as tombstones, oldest first.
+
+        Answers "what did we used to believe, when did it change, and
+        why?" — each entry carries the superseding record's id, the
+        supersession reason and time, and a confidence that decays
+        with age (``t.decayed_confidence(at=...)``). The live head of
+        the chain is not a tombstone and is not included; use
+        ``history()`` for the full chain of records.
+        """
+        chain = self.history(agent_id, record_id)
+        return [from_record(r) for r in reversed(chain)
+                if r.status == "superseded"]
 
     # -- conflicts & consolidation ------------------------------------
     def open_conflicts(self, agent_id: str,

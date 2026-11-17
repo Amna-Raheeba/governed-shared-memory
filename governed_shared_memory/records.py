@@ -10,6 +10,11 @@ optional metadata a caller may forget.
 A record is *active* until it is superseded. Supersession is explicit:
 ``superseded_by`` names the record that replaces it, and the old record
 stays readable in history — it is never deleted or silently edited.
+
+Since v0.2.0 a superseded record also keeps *when* it was replaced
+(``superseded_at``) and *why* (``supersession_reason``): without those
+two fields history can say what changed, but never why — which is the
+question a tombstone exists to answer (see ``tombstones.py``).
 """
 from __future__ import annotations
 
@@ -41,6 +46,8 @@ class MemoryRecord:
     status: str = "active"  # "active" | "superseded"
     superseded_by: str | None = None  # record_id of the replacement
     supersedes: str | None = None  # record_id this record replaces
+    superseded_at: str | None = None  # ISO 8601 UTC when it was replaced
+    supersession_reason: str | None = None  # why it was replaced
     tags: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -59,6 +66,11 @@ class MemoryRecord:
         if not self.record_id:
             self.record_id = new_id(self.text, self.writer, self.created_at)
 
+    @property
+    def is_tombstone(self) -> bool:
+        """True once the record has been superseded: history, not fact."""
+        return self.status == "superseded"
+
     def provenance(self) -> dict:
         """The provenance block: who, when, from where, how sure."""
         return {
@@ -71,6 +83,8 @@ class MemoryRecord:
             "status": self.status,
             "superseded_by": self.superseded_by,
             "supersedes": self.supersedes,
+            "superseded_at": self.superseded_at,
+            "supersession_reason": self.supersession_reason,
         }
 
     def to_dict(self) -> dict:
@@ -93,6 +107,8 @@ class MemoryRecord:
             status=data.get("status", "active"),
             superseded_by=data.get("superseded_by"),
             supersedes=data.get("supersedes"),
+            superseded_at=data.get("superseded_at"),
+            supersession_reason=data.get("supersession_reason"),
             tags=list(data.get("tags", [])),
         )
 

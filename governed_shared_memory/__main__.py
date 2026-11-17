@@ -7,6 +7,8 @@
     python -m governed_shared_memory search --agent planner --query deadline
     python -m governed_shared_memory conflicts --agent admin
     python -m governed_shared_memory consolidate --agent admin
+    python -m governed_shared_memory history --agent admin --record-id mem-xxx
+    python -m governed_shared_memory tombstones --agent admin
 """
 from __future__ import annotations
 
@@ -58,7 +60,8 @@ def cmd_demo(_args: argparse.Namespace) -> int:
     except PermissionError as exc:
         print(f"  leak blocked: {exc}")
     new = mem.supersede(
-        "planner", rec.record_id, "project deadline is 20 January", "user")
+        "planner", rec.record_id, "project deadline is 20 January", "user",
+        reason="user confirmed the later date")
     print(f"planner superseded {rec.record_id} with {new.record_id}")
     view = consolidate(mem.store.list(namespace="shared", status=None), "shared")
     print(json.dumps(view.summary(), indent=2))
@@ -104,6 +107,16 @@ def main(argv: list[str] | None = None) -> int:
     p_con.add_argument("--namespace", default="shared")
     p_con.add_argument("--db", default=str(DEFAULT_DB))
 
+    p_hist = sub.add_parser("history", help="show a record's supersession chain")
+    p_hist.add_argument("--agent", default="admin")
+    p_hist.add_argument("--record-id", required=True)
+    p_hist.add_argument("--db", default=str(DEFAULT_DB))
+
+    p_tomb = sub.add_parser("tombstones", help="list tombstones in a namespace")
+    p_tomb.add_argument("--agent", default="admin")
+    p_tomb.add_argument("--namespace", default="shared")
+    p_tomb.add_argument("--db", default=str(DEFAULT_DB))
+
     args = parser.parse_args(argv)
     if args.command == "demo":
         return cmd_demo(args)
@@ -131,6 +144,15 @@ def main(argv: list[str] | None = None) -> int:
                 mem.store.list(namespace=args.namespace, status=None),
                 args.namespace)
             print(json.dumps(view.to_dict(), indent=2))
+        elif args.command == "history":
+            chain = mem.history(args.agent, args.record_id)
+            print(json.dumps([r.to_dict() for r in chain], indent=2))
+            stones = mem.tombstone_history(args.agent, args.record_id)
+            print("tombstones:")
+            print(json.dumps([t.to_dict() for t in stones], indent=2))
+        elif args.command == "tombstones":
+            stones = mem.tombstones(args.agent, args.namespace)
+            print(json.dumps([t.to_dict() for t in stones], indent=2))
     finally:
         mem.close()
     return 0
