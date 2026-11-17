@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st  # noqa: E402
 
 from dashboard.helpers import (  # noqa: E402
-    audit_rows, conflict_rows, memory_rows, summary_cards,
+    audit_rows, conflict_rows, memory_rows, summary_cards, tombstone_rows,
 )
 from governed_shared_memory.access import Agent  # noqa: E402
 from governed_shared_memory.consolidation import consolidate  # noqa: E402
@@ -48,6 +48,11 @@ def _seed() -> GovernedMemory:
               "tool:arxiv")
     mem.write("researcher", "saliency maps did not improve clinician trust",
               "shared", "tool:arxiv")
+    # One real tombstone for the Tombstones tab: the offsite moved.
+    old_venue, _ = mem.write("planner", "team offsite is Lahore", "shared",
+                             "user")
+    mem.supersede("planner", old_venue.record_id, "team offsite is Karachi",
+                  "user", reason="venue changed by organiser")
     return mem
 
 
@@ -55,8 +60,9 @@ if "mem" not in st.session_state:
     st.session_state.mem = _seed()
 mem: GovernedMemory = st.session_state.mem
 
-tab_view, tab_write, tab_search, tab_audit = st.tabs(
-    ["Consolidated view", "Write a memory", "Search", "Audit log"])
+tab_view, tab_write, tab_search, tab_tombstones, tab_audit = st.tabs(
+    ["Consolidated view", "Write a memory", "Search",
+     "Tombstones — what we used to believe", "Audit log"])
 
 with tab_view:
     view = consolidate(mem.store.list(namespace="shared", status=None),
@@ -70,13 +76,13 @@ with tab_view:
     st.subheader("Open conflicts — surfaced, never silently resolved")
     conflicts = conflict_rows(view)
     if conflicts:
-        st.dataframe(conflicts, use_container_width=True)
+        st.dataframe(conflicts, width="stretch")
     else:
         st.success("No open conflicts.")
     st.subheader("Active memories (newest first)")
-    st.dataframe(memory_rows(view.active), use_container_width=True)
+    st.dataframe(memory_rows(view.active), width="stretch")
     st.subheader("Superseded — still readable, with their replacement")
-    st.dataframe(memory_rows(view.superseded), use_container_width=True)
+    st.dataframe(memory_rows(view.superseded), width="stretch")
 
 with tab_write:
     with st.form("write"):
@@ -105,9 +111,30 @@ with tab_search:
                 [{"score": round(score, 3), "writer": r.writer,
                   "text": r.text, "status": r.status}
                  for r, score in results],
-                use_container_width=True)
+                width="stretch")
         else:
             st.info("No matching active memories.")
 
+with tab_tombstones:
+    stones = mem.tombstones("admin", "shared")
+    st.metric("Tombstones in shared", len(stones))
+    st.caption("Superseded records stay queryable as history — with the "
+               "record that replaced them, the reason, and the time. "
+               "Confidence decays with a 24-hour half-life, so an old "
+               "belief weighs less the longer it has been dead. Live "
+               "queries never return a tombstone as a current fact.")
+    if stones:
+        st.dataframe(tombstone_rows(stones), width="stretch")
+        st.subheader("Full chain — what we believed, when, and why")
+        choice = st.selectbox(
+            "Pick a tombstone to see its whole supersession chain",
+            [t.record_id for t in stones],
+            format_func=lambda rid: next(
+                (t.text for t in stones if t.record_id == rid), rid))
+        chain = mem.tombstone_history("admin", choice)
+        st.dataframe(tombstone_rows(chain), width="stretch")
+    else:
+        st.info("No tombstones yet — supersede a memory to create one.")
+
 with tab_audit:
-    st.dataframe(audit_rows(mem.audit_log()), use_container_width=True)
+    st.dataframe(audit_rows(mem.audit_log()), width="stretch")

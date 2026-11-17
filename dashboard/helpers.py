@@ -10,6 +10,7 @@ from typing import Any
 
 from governed_shared_memory.consolidation import ConsolidatedView
 from governed_shared_memory.records import AuditEntry, MemoryRecord
+from governed_shared_memory.tombstones import Tombstone
 
 
 def memory_rows(records: list[MemoryRecord]) -> list[dict[str, Any]]:
@@ -55,6 +56,25 @@ def summary_cards(view: ConsolidatedView) -> dict[str, int]:
         "conflicted_records": summary["conflicted_records"],
         "superseded": summary["superseded"],
     }
+
+
+def tombstone_rows(tombstones: list[Tombstone],
+                   at: str | None = None) -> list[dict[str, Any]]:
+    """One row per tombstone: what we believed, when it changed, why,
+    and how much confidence it still carries at the reference time."""
+    return [
+        {
+            "id": t.record_id,
+            "text": t.text,
+            "writer": t.writer,
+            "superseded_by": t.superseded_by or "",
+            "superseded_at": t.superseded_at or "unknown",
+            "reason": t.supersession_reason or "not recorded",
+            "original_confidence": round(t.original_confidence, 2),
+            "decayed_confidence": round(t.decayed_confidence(at), 3),
+        }
+        for t in tombstones
+    ]
 
 
 def audit_rows(entries: list[AuditEntry]) -> list[dict[str, Any]]:
