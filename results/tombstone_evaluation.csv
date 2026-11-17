@@ -1,0 +1,10 @@
+metric,value
+seeded_supersessions,12
+tombstones_found,12
+tombstone_recall,1.0
+decay_checks,48
+decay_exact,48
+decay_exact_rate,1.0
+live_exclusion_checks,24
+live_exclusion_passed,24
+live_exclusion_rate,1.0
