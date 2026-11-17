@@ -46,6 +46,33 @@ flowchart TD
 - **Two detectors** — *slot conflicts* (same subject + attribute, different date/money/number value — the case that matters most when agents overwrite each other's facts) and *polarity conflicts* (opposing negation vs positive-outcome markers over shared terms). Both are documented lexical heuristics adapted from the evidence-graph detector in [multi-agent-research-assistant](https://github.com/Amna-Raheeba/multi-agent-research-assistant); they catch blunt disagreement and miss paraphrases.
 - **Search tie-break** — BM25 ties break toward the newest record, so when two writers disagree the reader sees the latest claim first, with the conflict flag next to it.
 - **Audit log** — every write, read, supersession, denial and conflict is appended to SQLite and exported with the JSON dump.
+- **Provenance-preserving tombstones** — a superseded record is not deleted: it stays queryable as history with the superseding record's id, the supersession reason, and the time — and a confidence that decays deterministically (24-hour half-life by default). See §2.4.
+
+### 2.4 Provenance-preserving tombstones (new in 0.2.0)
+
+Supersession used to record *what* changed but not *why* or *when* —
+`history()` could show the chain, never the reason. Now every
+supersession records a reason and a timestamp on the old record, and
+the old record becomes a **tombstone**: still queryable as history,
+never returned by a live query, with a confidence that decays
+deterministically — exponential half-life, 24 hours by default:
+
+```
+decayed = original × 0.5 ** (age_seconds / 86400)
+```
+
+So an agent can ask "what did we used to believe, when did it
+change, and why?" — `tombstones(agent, namespace)` lists them,
+`tombstone_history(agent, record_id)` returns the full chain oldest
+first, and `tombstone.decayed_confidence(at=...)` evaluates the decay
+at any reference time. Decay models *salience*, not truth: a tombstone
+never becomes a current fact again, and rows written before v0.2.0
+(which have no supersession time) report their original confidence
+unchanged rather than a decay from a guessed date. No other
+agent-memory tool ships this: Mem0/Letta version memories, and the
+Caura et al. paper's service keeps superseded rows, but neither
+records a supersession reason with a deterministic decay curve an
+agent can query.
 
 ## 3. Quick Start
 
@@ -53,8 +80,9 @@ flowchart TD
 # Python 3.10+, no dependencies for the library
 python -m governed_shared_memory demo        # three-agent scenario
 python -m governed_shared_memory evaluate    # eval task set
+python -m governed_shared_memory tombstones  # superseded records as tombstones
 
-pip install pytest && pytest -q              # 67 tests
+pip install pytest && pytest -q              # 87 tests
 pip install streamlit && streamlit run dashboard/app.py   # live dashboard (see dashboard/README.md)
 ```
 
@@ -72,8 +100,13 @@ record2, conflicts = mem.write("researcher", "project deadline is 20 January",
 # conflicts: 1 slot conflict — flagged, both records stay active
 
 new = mem.supersede("planner", record.record_id,
-                    "project deadline is 20 January", source="user")
-# old record is now superseded; history(new.record_id) shows the chain
+                    "project deadline is 20 January", source="user",
+                    reason="user confirmed the later date")
+# old record is now a tombstone: history(new.record_id) shows the
+# chain, and tombstone_history(new.record_id) shows it with its
+# reason, time, and decayed confidence
+stone = mem.tombstones("admin", "shared")[0]
+stone.decayed_confidence()  # 24h after supersession: half the original
 ```
 
 A full demo run is in [`examples/sample_session.md`](examples/sample_session.md).
@@ -88,15 +121,16 @@ governed_shared_memory/
 ├── bm25.py           # pure-Python BM25 retrieval
 ├── store.py          # SQLite store + JSON export/import · audit log
 ├── memory.py         # GovernedMemory facade: write/read/search/supersede
+├── tombstones.py     # provenance-preserving tombstones + decay curve
 ├── consolidation.py  # contradiction-aware consolidated view
-├── evaluation.py     # LongMemEval/LoCoMo-style task runner
-└── __main__.py       # CLI: demo · evaluate · write · search · conflicts · consolidate
-dashboard/            # Streamlit app: consolidated view, write, search, audit (dashboard/README.md)
+├── evaluation.py     # LongMemEval/LoCoMo-style task runner + tombstone eval
+└── __main__.py       # CLI: demo · evaluate · write · search · conflicts · consolidate · history · tombstones
+dashboard/            # Streamlit app: consolidated view, write, search, tombstones, audit (dashboard/README.md)
 data/eval_tasks.json  # 6 hand-written multi-session scenarios, 8 questions
-notebooks/            # 01 demo scenario · 02 evaluation run
+notebooks/            # 01 demo scenario · 02 evaluation run · 03 tombstone evaluation
 docs/experiment_log.md
-results/              # demo_view.json · evaluation.csv, from real runs
-tests/                # records · bm25 · contradictions · access · memory · consolidation · evaluation · dashboard
+results/              # demo_view.json · evaluation.csv · tombstone_evaluation.json/.csv, from real runs
+tests/                # records · bm25 · contradictions · access · memory · consolidation · evaluation · dashboard · tombstones
 ```
 
 ## 5. Design Decisions
@@ -122,9 +156,27 @@ Hand-written LongMemEval/LoCoMo-style task set (`data/eval_tasks.json`): 6 multi
 
 > Honest context: this is a small hand-written task set designed to exercise the guarantees, not a real benchmark — high scores are expected on scenarios built for the system. It is a regression harness: the value is that a future change which breaks a guarantee fails loudly here. The detectors are lexical heuristics and will miss paraphrased disagreement; the numbers say nothing about performance on real agent traffic.
 
+### Tombstone evaluation (new in 0.2.0)
+
+Seeded measurement (`notebooks/03_tombstone_evaluation.py`, 12
+supersessions with known reasons and fixed supersession times;
+`results/tombstone_evaluation.json`):
+
+| Metric | Result |
+|---|---|
+| Tombstone recall | **1.00** (12/12 seeded supersessions retrievable) |
+| Decay-curve exactness | **1.00** (48/48 checks at 0/24/48/72 h match `original × 0.5^(age/24h)` to <1e-9) |
+| Live-query exclusion | **1.00** (24/24 checks: no tombstone in `list_active` or BM25 search) |
+
+> Honest context: the decay curve is exact because it is a formula,
+> not a measurement — the checks prove the implementation follows the
+> formula, not that 24 hours is the right half-life. The half-life is
+> a policy choice, not a measured optimum; it models how fast an old
+> belief should fade from salience, not how fast it becomes false.
+
 ## 7. Limitations & Roadmap
 
-**Limitations:** contradiction detection needs shared terms and explicit markers, so paraphrased disagreement slips through · BM25 is lexical, so semantically similar facts with different words may not retrieve together · confidence is writer-reported, not calibrated · single-file SQLite, no concurrent multi-process writes · no embedding retrieval yet.
+**Limitations:** contradiction detection needs shared terms and explicit markers, so paraphrased disagreement slips through · BM25 is lexical, so semantically similar facts with different words may not retrieve together · confidence is writer-reported, not calibrated · single-file SQLite, no concurrent multi-process writes · no embedding retrieval yet · the 24-hour tombstone half-life is a policy choice, not a measured optimum — decay models salience, not truth.
 
 **Roadmap:** entailment-based contradiction detection behind the same interface · embedding retrieval as an optional scorer · confidence calibration from writer history · multi-process locking for the SQLite store · a real LongMemEval subset run against the same harness.
 
