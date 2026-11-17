@@ -1,8 +1,11 @@
 """Dashboard helpers: shaping only, no streamlit."""
+from datetime import datetime, timedelta, timezone
+
 from governed_shared_memory.consolidation import consolidate
 from governed_shared_memory.records import AuditEntry, MemoryRecord
+from governed_shared_memory.tombstones import Tombstone
 from dashboard.helpers import (
-    audit_rows, conflict_rows, memory_rows, summary_cards,
+    audit_rows, conflict_rows, memory_rows, summary_cards, tombstone_rows,
 )
 
 
@@ -52,3 +55,34 @@ def test_audit_rows_shape():
 
 def test_memory_rows_empty_for_no_records():
     assert memory_rows([]) == []
+
+
+def test_tombstone_rows_show_reason_and_decayed_confidence():
+    base = datetime(2026, 11, 17, tzinfo=timezone.utc)
+    stone = Tombstone(
+        record_id="mem-old", text="team offsite is Lahore",
+        writer="planner", namespace="shared", source="user",
+        original_confidence=0.8, superseded_by="mem-new",
+        superseded_at=base.isoformat(),
+        supersession_reason="venue changed by organiser",
+        created_at=base.isoformat())
+    rows = tombstone_rows(
+        [stone], at=(base + timedelta(hours=24)).isoformat())
+    assert len(rows) == 1
+    assert rows[0]["reason"] == "venue changed by organiser"
+    assert rows[0]["original_confidence"] == 0.8
+    assert rows[0]["decayed_confidence"] == 0.4
+    assert rows[0]["superseded_by"] == "mem-new"
+
+
+def test_tombstone_rows_unknown_reason_and_time():
+    stone = Tombstone(
+        record_id="mem-legacy", text="old fact", writer="planner",
+        namespace="shared", source="user", original_confidence=0.8,
+        superseded_by="mem-new", superseded_at=None,
+        supersession_reason=None,
+        created_at="2026-11-16T00:00:00+00:00")
+    rows = tombstone_rows([stone])
+    assert rows[0]["reason"] == "not recorded"
+    assert rows[0]["superseded_at"] == "unknown"
+    assert rows[0]["decayed_confidence"] == 0.8
